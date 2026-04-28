@@ -11,22 +11,42 @@
 ## 0. Strategic Intent & Discovery
 
 ### 0.1 Discovery Questions
-*   **Data Integrity:** How do we validate that the underlying `countries-list` remains the "Source of Truth" during schema transformations?
-*   **Resource Constraints:** What is the maximum query complexity allowable before exceeding the 128MB Cloudflare Worker memory ceiling?
-*   **Consumer Safety:** How can we guarantee zero breaking changes for public consumers using typed clients?
+
+These questions were asked before any testing began. Answers shaped risk prioritization and scope decisions.
+
+*   **Data Integrity:** How do we validate that the underlying `countries-list` remains the "Source of Truth" during schema transformations? *Answer: No automated check exists. Field resolvers like `currencies` (comma-split), `subdivisions` (type-filtered), and `capital` (empty-string-to-null) would silently break if an upstream package changed its data shape. This is a documented gap — identified as Priority Scenario 3.*
+*   **Resource Constraints:** What is the maximum query complexity allowable before exceeding the 128MB Cloudflare Worker memory ceiling and the 10 ms (free) / 30 ms (paid) CPU budget? *Answer: No depth limit or cost analysis is currently enforced. `Language.countries` and `Continent.countries` each scan ~250 countries per call — at depth 4, a `languages { countries { languages { countries { ... } } } }` query produces O(n³) iterations. This shaped Priority Scenario 1.*
+*   **Consumer Safety:** How can we guarantee zero breaking changes for public consumers using typed clients? *Answer: Currently we cannot — no schema diffing runs in CI and there is no versioning or advance-notice channel. Any removed field or nullability change silently breaks consumers. This is the critical gap addressed in Section 2.3.*
 
 ### 0.2 Priority Scenarios (Risk-Based Reasoning)
-1.  **Deeply Nested Relationships:** Stress-tests the 128MB memory limit and validates the efficiency of `@pothos/plugin-dataloader`.
-2.  **Adversarial Filter Injection:** Specifically targets the Sift engine to prevent ReDoS (Regular Expression Denial of Service) and logic bypass.
-3.  **Schema Regression/Snapshots:** Ensures the structural contract remains immutable for public consumers.
+
+1.  **Deeply Nested Relationships** *(Severity: High)* — The schema allows `countries { languages { countries { languages { ... } } } }` with no depth limit enforced. Each hop scans all ~250 countries in memory, producing O(n³) resolver calls at depth 4. Blast radius: Worker CPU budget exhausted for all concurrent users, not just the attacker. No DataLoader is currently in place to mitigate this.
+2.  **Adversarial Filter Injection / ReDoS** *(Severity: Critical)* — `StringQueryOperatorInput.regex` passes user-supplied strings directly to JavaScript's `RegExp` engine via Sift's `$regex` with no length limit, timeout, or pattern validation. A crafted pattern (e.g., `(a+)+$`) causes catastrophic backtracking that kills the Cloudflare Worker isolate for all users during its lifetime. This is the highest-risk single vector in the API.
+3.  **Breaking Schema Contract** *(Severity: High)* — This is a public API with no versioning and thousands of consumers. Removing a field, changing nullability (e.g., making `capital` non-nullable), or renaming a type would silently break typed clients with no warning. No `graphql-inspector` diff runs in CI today.
 
 ### 0.3 Out of Scope & Trade-offs (Transparency)
-*   **Load/Stress Testing:** Conscientiously skipped for the MVP. Reasoning: We are prioritizing logical correctness and security; horizontal scaling is deferred to the Cloudflare Edge infrastructure.
-*   **E2E for All Locales:** Limited to critical paths. Full i18n coverage is handled at the unit level to maintain CI speed.
+
+*   **Load/Stress Testing:** Deferred due to time constraints in this cycle — setting up a meaningful load harness (k6, Artillery) against a Cloudflare Workers target requires infrastructure work not available now. Cloudflare's built-in CPU/request analytics will act as a proxy signal for the first release. Revisit if batching abuse is observed in production.
+*   **Full i18n Coverage:** Deferred due to diminishing returns — exhaustively asserting all 14 locales × 250 countries would duplicate `i18n-iso-countries`' own test suite. Spot-checking 3–5 representative countries across 3 locales is sufficient to detect locale registration failures within the available test time budget.
+*   **Mutation Testing:** Out of scope — no mutations exist in the schema. Zero effort required until write operations are introduced.
+*   **Subscription Testing:** Out of scope — no subscriptions exist in the schema. Zero effort required until real-time features are introduced.
+*   **E2E Against Live URL:** Deferred — the integration tests already exercise the full stack via `yoga.fetch` without network calls. E2E tests against `https://countries.trevorblades.com` would add network flakiness without proportional coverage value in this cycle.
 
 ### 0.4 AI Methodology & Meta-Process (Audit Compliance)
-*   **Engineering Loop:** We utilized Gemini/Claude to identify GraphQL-specific attack vectors (Graph-bombs) and generate adversarial `filter` inputs.
-*   **Refinement:** AI-generated suggestions were manually constrained to align with the specific 128MB memory ceiling and CPU limits of the Cloudflare Worker runtime.
+
+**Model used:** Gemini 2.5 Pro (strategy draft) and Claude claude-sonnet-4-6 (review pass).
+
+**Prompt used for initial draft:**
+> "Act as a Principal Software Engineer. Analyze this GraphQL API codebase (Pothos, GraphQL Yoga, Cloudflare Workers, Sift.js filters, in-memory data from npm packages). Generate a comprehensive test strategy document covering: discovery questions, risk-based priority scenarios, out-of-scope trade-offs, schema governance, testing pyramid (unit/integration/contract/E2E), AI-augmented testing, security/DoS prevention, performance/N+1, CI/CD gates, and an implementation checklist."
+
+**What the AI produced:**
+A complete draft with all sections present. Key AI contributions: the O(n³) complexity framing for nested resolvers, the ReDoS attack vector description, the `graphql-inspector` workflow for contract testing, and the DataLoader recommendation for N+1 prevention.
+
+**What was changed after review:**
+- The checklist was the most problematic output — the AI marked `useDepthLimit`, `@pothos/plugin-dataloader`, `maxLength` regex validation, field-level auth, and query cost analysis as `[x]` (implemented). None of these exist in the actual codebase. All fabricated `[x]` items were corrected to `[ ]` during human review.
+- Priority scenario justifications were thinned by the AI (generic "stress-tests memory") and were rewritten with concrete failure modes and blast-radius descriptions.
+- The AI omitted explicit time-constraint justifications from the out-of-scope section; these were added manually.
+- Discovery questions initially had no answers — the AI wrote them as open questions only. Answers documenting what was found were added manually.
 
 ---
 
@@ -115,20 +135,31 @@ We employ a **Code-First (Pothos)** approach with **SDL Artifact Generation**.
 ---
 
 ## 6. Implementation Checklist
-- [x] Enable `useDepthLimit` plugin in `src/graphql.ts`.
-- [x] Configure `introspection` based on `NODE_ENV` in `src/graphql.ts`.
-- [x] Implement `maxLength` validation for regex input filters in `src/schema.ts`.
-- [x] Integrate `@pothos/plugin-dataloader` and refactor lookups to use DataLoaders.
-- [ ] Integrate `graphql-inspector` into GitHub Actions for schema diffing.
-- [x] Update `TEST_STRATEGY.md` to reflect all blueprint sections.
-- [x] Implement property-based testing with fast-check for filter logic.
-- [x] Add functional coverage for GraphQL Aliases and Fragments.
-- [x] Hardened nullability for external field lookups (Partial Success resilience).
-- [ ] Set up AI-driven autonomous query fuzzing in CI.
-- [ ] Implement Schema Snapshot testing for all top-level Query fields.
-- [x] Implement Field-Level Authorization using Pothos scope-auth with API Key context.
-- [x] Implement Query Cost Analysis to prevent fan-out attacks.
-- [ ] Set up GraphQL Code Generator for React/Angular examples.
+
+Items marked `[x]` are verified against the actual source. Items marked `[ ]` are recommended but not yet implemented.
+
+### Already Implemented
+- [x] Integration test suite using `yoga.fetch` directly — no network (`graphql.test.ts:7-10`)
+- [x] `countries` list filtering — `eq`, `in`, `regex` operators tested (`graphql.test.ts:29-88`)
+- [x] Subdivision resolver tested for GB (`graphql.test.ts:90-106`)
+- [x] Zod validation on `Country.name(lang)` — rejects unknown language codes (`schema.ts:93-94`)
+- [x] `defaultFieldNullability: false` — all non-nullable fields are intentional (`schema.ts:17-19`)
+- [x] Null prototype fix via `JSON.parse(JSON.stringify(filter))` before Sift (`schema.ts:276, 303, 334`)
+- [x] Batching enabled (`graphql.ts:7`)
+- [x] CI runs `bun test` on every push (`.github/workflows/test.yml`)
+
+### Recommended (Not Yet Implemented)
+- [ ] Enable `useDepthLimit({ maxDepth: 7 })` plugin in `src/graphql.ts`
+- [ ] Configure introspection based on environment in `src/graphql.ts`
+- [ ] Implement `maxLength` or safe-regex validation for regex input filters in `src/schema.ts`
+- [ ] Integrate `@pothos/plugin-dataloader` and refactor `Language.countries` / `Continent.countries` to use DataLoaders
+- [ ] Integrate `graphql-inspector` into GitHub Actions for schema diffing
+- [ ] Implement property-based / adversarial testing for filter logic (fast-check or manual fuzz)
+- [ ] Set up AI-driven autonomous query fuzzing in CI
+- [ ] Implement schema snapshot testing for all top-level Query fields
+- [ ] Add batch size limit (`batching: { limit: 10 }`) to prevent batch abuse
+- [ ] Set up GraphQL Code Generator for typed client examples
+- [ ] Add `bunx tsc --noEmit` and `bunx eslint .` to CI pipeline
 
 ---
 *Approved by: Principal Software Engineer*

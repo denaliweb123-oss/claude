@@ -9,9 +9,16 @@ description: Audits a GraphQL Test Strategy document against five mandatory QA r
 
 Act as a Lead QA Engineer. Critically audit the project's `TEST_STRATEGY.md` against the five mandatory requirements below.
 
-### Step 1: Read the Strategy Document
+### Step 1: Ask for the File
 
-Read `TEST_STRATEGY.md` from the project root. If it does not exist, stop and tell the user to generate one first (e.g., using the `graphql-test-strategy` skill).
+Ask the user:
+
+> "What is the file name or path of the strategy document to audit? (default: `TEST_STRATEGY.md` in the project root)"
+
+- If the user provides a path, use it as-is.
+- If the user presses enter or says "default", use `TEST_STRATEGY.md` from the project root.
+
+Read the file. If it does not exist at the given path, stop and tell the user — suggest generating one with the `graphql-test-strategy` skill if no file exists yet.
 
 ### Step 2: Ask About Custom Requirements
 

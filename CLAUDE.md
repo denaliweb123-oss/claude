@@ -9,7 +9,7 @@ This is a **GraphQL API for countries, continents, and languages** built with mo
 ### Architecture
 
 - **Framework**: GraphQL Yoga (graphql-yoga) running on Cloudflare Workers via Wrangler
-- **Schema Builder**: Pothos (schema-first GraphQL builder with TypeScript)
+- **Schema Builder**: Pothos (code-first GraphQL builder — schema is defined in TypeScript, no SDL file)
 - **Data Sources**:
   - `countries-list`: Base country/continent/language data
   - `iso-3166-2`: Detailed subdivision information
@@ -88,6 +88,7 @@ All schema types are non-nullable by default (`defaultFieldNullability: false`).
   - `Language.countries` → all countries speaking that language
 - **Array Splitting**: `Country.currencies` and `Country.phones` split comma-separated strings into arrays (raw fields may contain multiple values)
 - **AWS Regions**: `Country.awsRegion` resolves to the nearest AWS region
+- **Deprecation**: `Country.states` is marked TODO for deprecation in favor of `Country.subdivisions` — do not add new callers of `states`
 
 ### Filtering
 

@@ -11,14 +11,36 @@
 ### Questions Asked Before Testing
 
 - **Data integrity**: How do we know an upstream package update (`countries-list`, `iso-3166-2`, etc.) silently breaks a resolver transformation (currency split, subdivision filter, empty-string-to-null coercion)?
-  *Answer: We don't — no regression fixtures exist for these transformations. Gap.*
+  *Answer: We don't — no regression fixtures exist for these transformations. **Gap.***
 
 - **Resource constraints**: At what query complexity does the Worker hit its CPU ceiling? How does nested querying multiply cost?
-  *Answer: No depth or complexity limit is enforced. `Language.countries` × `Continent.countries` produce O(n³) iterations at depth 4. Gap.*
+  *Answer: No depth or complexity limit is enforced. `Language.countries` × `Continent.countries` produce O(n³) iterations at depth 4. **Gap.***
+
+- **GraphQL Batching Limits**: Is there a hard limit on GraphQL Batching? (`batching: true` in `src/graphql.ts` without a `limit`).
+  *Answer: No limit. An attacker could send hundreds of queries in one request, bypassing depth limits and exhausting Worker memory. **Gap.***
+
+- **Cold Start vs. Warm Performance**: What is the "Cold Start" behavior vs. "Warm" performance? (Large NPM packages like `countries-list` and `i18n-iso-countries` are parsed on every request).
+  *Answer: Unmeasured. This could significantly impact the 10ms–50ms CPU limit on Cloudflare Workers for initial requests. **Gap.***
+
+- **Out-Of-Memory (OOM) Failures**: How do we handle Out-Of-Memory (OOM) failures?
+  *Answer: Unhandled. If a query is too large, the Worker might fail abruptly or leak partial data. **Gap.***
+
+- **Catastrophic Backtracking (ReDoS)**: Are we protected against "Catastrophic Backtracking"? (The `regex` filter in `StringQueryOperatorInput` is a major risk).
+  *Answer: Partially addressed with `maxLength` validation, but complex patterns within the limit could still hang the JS isolate. **High Risk.***
+
+- **Introspection in Production**: Is Introspection intentional in Production?
+  *Answer: Yes, currently enabled for public API with playground. Provides a roadmap for attackers. **Risk.***
+
+- **Query Amplification via Aliases**: How do we prevent "Query Amplification" via Aliases?
+  *Answer: Unaddressed. A user could query the same expensive field multiple times using different aliases in a single request. **Gap.***
 
 - **Consumer safety**: How many typed clients break silently if a field is removed or nullability changes?
-  *Answer: Undetectable pre-production — no schema diffing in CI, no snapshot committed. Gap.*
+  *Answer: Undetectable pre-production — no schema diffing in CI, no snapshot committed. **Gap.***
 
+- **Nullability Failure Mode**: What is our "Nullability" failure mode? (`defaultFieldNullability: false`).
+  *Answer: If an upstream data source returns `undefined` for a non-nullable field, the entire object (or query) will return `null`. This is an "all-or-nothing" failure. **Design Choice/Risk.***
+
+- **Deprecation Communication**: How do we communicate deprecations? (e.g., `Country.states` is `TODO` for deprecation).
 ### Priority Scenarios
 
 | # | Scenario | Severity | Why |
